@@ -81,3 +81,79 @@ INSERT INTO BorrowLogs (UserID, BookID, BorrowedDate, DueDate, ReturnDate, Statu
 INSERT INTO Penalty (BorrowLogID, ReturnDate, DueDate, BorrowedID, DaysOverdue, PenaltyAmount, PenaltyReason) VALUES 
 (1, '2023-10-12', '2023-10-10', 101, 2, 20.00, 'Overdue'),
 (2, NULL, '2023-11-15', 102, 0, 50.00, 'Lost');
+
+
+-- Compute Penalties (STORED PROCEDURES)
+BEGIN	
+    DECLARE var_dueDate DATE;
+    DECLARE var_returnedDate DATE;
+    DECLARE var_status VARCHAR(20);
+    DECLARE var_daysOverdue INT DEFAULT 0;
+    DECLARE var_penaltyAmount DECIMAL(10,2) DEFAULT 0;
+    DECLARE var_reason VARCHAR(20) DEFAULT NULL;
+    
+    -- Since borrow log ID is a parameter, this is will hande missing and not correct log ID
+    IF NOT EXISTS (
+        SELECT 1 FROM borrowlogs WHERE BorrowLogID = p_BorrowLogID
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'BorrowLogID not found';
+    END IF;
+    
+    SELECT b.ReturnDate, b.DueDate, b.Status
+    INTO var_returnedDate, var_dueDate, var_status
+    FROM borrowlogs b
+    WHERE BorrowLogID = p_BorrowLogID;
+    
+    IF var_returnedDate IS NOT NULL AND var_returnedDate > var_dueDate THEN
+        SET var_daysOverdue = DATEDIFF(var_returnedDate, var_dueDate);
+        SET var_penaltyAmount = var_penaltyAmount + (var_daysOverdue * 100);
+        SET var_reason = CONCAT_WS(', ', var_reason, 'Overdue');
+    END IF;
+    
+    IF var_status = 'LOST'
+    THEN 
+    	SET var_penaltyAmount = var_penaltyAmount + 5000;
+        SET var_reason = CONCAT_WS(', ', var_reason, 'LOST');
+    END IF;
+    
+    IF var_status = 'Damaged' 
+    THEN
+        SET var_penaltyAmount = var_penaltyAmount + 1000;
+        SET var_reason = CONCAT_WS(', ', var_reason, 'Damaged');  
+    END IF;
+    
+    IF var_penaltyAmount > 0 THEN
+        INSERT INTO penalty (
+            BorrowLogID,
+            DaysOverdue,
+            PenaltyAmount,
+            PenaltyReason
+        )
+        VALUES (
+            p_BorrowLogID,
+            var_daysOverdue,
+            var_penaltyAmount,
+            TRIM(var_reason)
+        );
+    END IF;
+    
+    SELECT 
+        log.BorrowLogID,
+        u.FullName,
+        b.BookTitle,
+        NULLIF(TRIM(v.PenaltyReason), '') AS PenaltyType,
+        v.DaysOverdue,
+        v.TotalPenalty
+    FROM borrowlogs log 
+    LEFT JOIN users u ON log.UserID = u.UserID
+    LEFT JOIN books b ON log.BookID = b.BookID
+    JOIN (
+    	SELECT 
+            var_daysOverdue AS DaysOverdue,
+            var_penaltyAmount AS TotalPenalty,
+            var_reason AS PenaltyReason
+	) AS v
+    WHERE log.BorrowLogID = p_BorrowLogID;
+
+END
